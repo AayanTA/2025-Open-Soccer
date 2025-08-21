@@ -6,7 +6,7 @@ import math
 from gpiozero import Button
 
 # GPIO setup
-button = Button(2)
+button = Button(14)
 running = False
 was_running = False
 
