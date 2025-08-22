@@ -20,7 +20,7 @@ button.when_pressed = toggle_run
 
 # Initialize Picamera2
 picam2 = Picamera2()
-picam2.configure(picam2.create_preview_configuration(main={"format": "RGB888", "size": (640, 480)}))
+picam2.configure(picam2.create_preview_configuration(main={"format": "XRGB8888", "size": (640, 480)}))
 picam2.start()
 
 # Ball RGB sample (mean from samples)
@@ -55,6 +55,8 @@ while True:
         was_running = True
 
     frame_rgb = picam2.capture_array()
+    frame_rgb = frame_rgb[:, :, :3]        # ✅ drop alpha channel (XRGB8888 → RGB)
+    frame_rgb = np.ascontiguousarray(frame_rgb)  # ✅ ensure OpenCV compatibility
 
     gray = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2GRAY)
     motion_mask = None
