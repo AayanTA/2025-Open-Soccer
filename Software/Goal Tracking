@@ -1,0 +1,120 @@
+import cv2
+import numpy as np
+import time
+import math
+from picamera2 import Picamera2
+
+# --------------------
+# Camera setup (Raspberry Pi)
+# --------------------
+picam2 = Picamera2()
+config = picam2.create_preview_configuration(main={"size": (640, 480)})
+picam2.configure(config)
+picam2.start()
+
+frame_center = (320, 240)
+persist_time = 2.0
+prev_gray = None
+
+# HSV color ranges for goals
+goal_data = {
+    "yellow": {
+        "hsv_lower": np.array([15, 120, 120]),
+        "hsv_upper": np.array([35, 255, 255]),
+        "last_pos": None, "last_angle": None, "last_seen": 0,
+        "draw_color": (0, 255, 255)
+    },
+    "cyan": {
+        "hsv_lower": np.array([85, 100, 100]),
+        "hsv_upper": np.array([105, 255, 255]),
+        "last_pos": None, "last_angle": None, "last_seen": 0,
+        "draw_color": (255, 255, 0)
+    }
+}
+
+# --------------------
+# Utility: angle calc
+# --------------------
+def compute_angle(center):
+    dx = center[0] - frame_center[0]
+    dy = frame_center[1] - center[1]  # invert y for correct orientation
+    angle = (math.degrees(math.atan2(dx, dy)) + 360) % 360
+    return angle
+
+# --------------------
+# Goal detection
+# --------------------
+def process_goal(frame_bgr, mask_motion, goal_name, goal_info):
+    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, goal_info["hsv_lower"], goal_info["hsv_upper"])
+
+    # Morphological filtering
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    best_contour = None
+    best_area = 0
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+        if area > 200:  # ignore small noise
+            if area > best_area:
+                best_area = area
+                best_contour = contour
+
+    if best_contour is not None:
+        x, y, w, h = cv2.boundingRect(best_contour)
+        center = (int(x + w / 2), int(y + h / 2))
+        angle = compute_angle(center)
+
+        goal_info["last_pos"] = center
+        goal_info["last_angle"] = angle
+        goal_info["last_seen"] = time.time()
+
+        # Draw current detection
+        cv2.rectangle(frame_bgr, (x, y), (x + w, y + h), goal_info["draw_color"], 2)
+        cv2.putText(frame_bgr, f"{goal_name.capitalize()}: {int(angle)} deg",
+                    (center[0] + 10, center[1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+
+        print(f"{goal_name.capitalize()} Goal @ {center}, Angle: {int(angle)}°")
+
+    elif goal_info["last_pos"] and time.time() - goal_info["last_seen"] < persist_time:
+        # Draw last known position
+        cv2.circle(frame_bgr, goal_info["last_pos"], 10, (200, 200, 200), 2)
+        cv2.putText(frame_bgr, f"Last {goal_name.capitalize()}: {int(goal_info['last_angle'])} deg",
+                    (goal_info["last_pos"][0] + 10, goal_info["last_pos"][1]),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
+        print(f"Last Seen {goal_name.capitalize()} Goal @ {goal_info['last_pos']}, "
+              f"Angle: {int(goal_info['last_angle'])}°")
+
+# --------------------
+# Main loop
+# --------------------
+try:
+    while True:
+        frame_bgr = picam2.capture_array()
+        gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+
+        motion_mask = None
+        if prev_gray is not None:
+            frame_diff = cv2.absdiff(gray, prev_gray)
+            _, motion_mask = cv2.threshold(frame_diff, 25, 255, cv2.THRESH_BINARY)
+            motion_mask = cv2.dilate(motion_mask, None, iterations=2)
+        prev_gray = gray
+
+        # Process both goals
+        for goal_name, goal_info in goal_data.items():
+            process_goal(frame_bgr, motion_mask, goal_name, goal_info)
+
+        cv2.imshow("Goal Tracking", frame_bgr)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+finally:
+    cv2.destroyAllWindows()
+    picam2.stop()
+    print("✅ Goal tracking ended.")
